@@ -4,7 +4,6 @@ Point d'entrée Streamlit avec page d'accueil et navigation.
 """
 
 import streamlit as st
-from modules.database import init_db
 
 # ── Configuration globale ──────────────────────────────────────────────────────
 st.set_page_config(
@@ -13,9 +12,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
-
-# Initialisation base de données au démarrage
-init_db()
 
 # ── Page d'accueil ─────────────────────────────────────────────────────────────
 st.title("🏉 Rugby Training Load Manager")
@@ -73,4 +69,4 @@ st.markdown(
 )
 
 st.markdown("---")
-st.caption("Développé avec Streamlit · Données stockées localement (SQLite) · v1.0")
+st.caption("Développé avec Streamlit · Données sécurisées sur Google Sheets · v1.1")
