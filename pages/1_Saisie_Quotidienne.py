@@ -1,35 +1,28 @@
 """
 pages/1_Saisie_Quotidienne.py
 Formulaire de saisie quotidienne : RPE × Durée + bien-être.
-Écrit simultanément dans SQLite (local) ET Google Sheets.
 """
 
 import streamlit as st
+import pandas as pd
 from datetime import date
-import sys
-import os
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
-from modules.database import get_players, add_session
-from modules.calculations import foster_load
-from modules.gsheets import (
-    append_saisie_row,
-    update_rpe_indv,
-    update_rpe_par_ligne_semaine,
-    is_configured,
-    init_sheets,
-    JOURS_ENTRAINEMENT,
-    RPE_LABELS,
-)
+from streamlit_gsheets import GSheetsConnection
 
 st.set_page_config(page_title="Saisie Quotidienne", page_icon="📝", layout="centered")
 
 st.title("Saisie Quotidienne")
 st.markdown("Enregistrez la séance d'entraînement et le ressenti de chaque joueur.")
 
-# ── Statut Google Sheets ────────────────────────────────────────────────────────
-gsheets_ok = is_configured()
+# ── Connexion à Google Sheets ──────────────────────────────────────────────────
+try:
+    conn = st.connection("gsheets", type=GSheetsConnection)
+    # Lecture de l'onglet Effectif
+    players_df = conn.read(worksheet="Effectif", ttl=0)
+    players_df = players_df.dropna(how="all")
+    gsheets_ok = True
+except Exception as e:
+    gsheets_ok = False
+    st.error(f"Erreur de connexion à Google Sheets : {e}")
 
 if gsheets_ok:
     st.success(
@@ -37,28 +30,32 @@ if gsheets_ok:
         "**Test - Suivi Charge RCA Amiens**"
     )
 else:
-    st.warning(
-        "Google Sheets non configuré. Les données seront enregistrées "
-        "**uniquement en local** (SQLite). "
-        "Consultez l'onglet **Configuration Google Sheets** pour activer la synchronisation."
-    )
+    st.stop() # On bloque la page si la connexion échoue
 
 # ── Chargement joueurs ──────────────────────────────────────────────────────────
-players_df = get_players()
-
 if players_df.empty:
     st.warning("Aucun joueur enregistré. Ajoutez des joueurs dans **Gestion des Joueurs**.")
     st.stop()
 
+# Nettoyage et formatage pour éviter les erreurs si des cases sont vides
+players_df["prenom"] = players_df["prenom"].fillna("")
+players_df["nom"] = players_df["nom"].fillna("")
+players_df["poste"] = players_df["poste"].fillna("Inconnu")
+
+# Création de la liste des joueurs
 player_options = {
     f"{row['prenom']} {row['nom']} — {row['poste']}": {
-        "id":    row["id"],
-        "nom":   f"{row['nom']} {row['prenom']}",
+        "id": row.get("id", "1"),
+        "nom": f"{row['nom']} {row['prenom']}",
         "poste": row["poste"],
+        "groupe": row.get("groupe", "Groupe Élargi")
     }
-    for _, row in players_df.iterrows()
+    for _, row in players_df.iterrows() if str(row['nom']).strip() != ""
 }
 
+if not player_options:
+     st.warning("La liste des joueurs semble vide ou mal formatée dans l'onglet Effectif.")
+     st.stop()
 
 def _get_week_number(d) -> int:
     """Calcule le numéro de semaine ISO."""
@@ -66,6 +63,26 @@ def _get_week_number(d) -> int:
         return d.isocalendar()[1]
     except Exception:
         return 1
+
+# ── Labels et variables de base ────────────────────────────────────────────────
+JOURS_ENTRAINEMENT = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Jour de match", "Dimanche"]
+
+RPE_LABELS = {
+    0: "0 — Repos complet",
+    1: "1 — Très très facile",
+    2: "2 — Très facile",
+    3: "3 — Facile",
+    4: "4 — Effort modéré",
+    5: "5 — Effort moyen",
+    6: "6 — Effort un peu difficile",
+    7: "7 — Difficile",
+    8: "8 — Très difficile",
+    9: "9 — Très très difficile",
+    10: "10 — Maximal"
+}
+
+def foster_load(rpe, duration):
+    return rpe * duration
 
 # ── Formulaire ──────────────────────────────────────────────────────────────────
 with st.form("saisie_form", clear_on_submit=True):
@@ -151,7 +168,14 @@ with st.form("saisie_form", clear_on_submit=True):
     st.markdown(f"**Score bien-être moyen :** **{avg_well:.1f} / 5** ({well_color})")
 
     st.markdown("---")
-    groupe_entrainement = st.radio("Groupe d'entraînement du jour *", ["Équipe A", "Équipe B", "Groupe Élargi"], horizontal=True)
+    
+    # On présélectionne le groupe du joueur par défaut
+    player_groupe = player_options[selected_label]["groupe"] if selected_label else "Groupe Élargi"
+    groupe_index = 0
+    if player_groupe == "Équipe B": groupe_index = 1
+    elif player_groupe == "Groupe Élargi": groupe_index = 2
+        
+    groupe_entrainement = st.radio("Groupe d'entraînement du jour *", ["Équipe A", "Équipe B", "Groupe Élargi"], horizontal=True, index=groupe_index)
 
     st.markdown("---")
     notes = st.text_area(
@@ -166,14 +190,13 @@ with st.form("saisie_form", clear_on_submit=True):
     )
 
     submitted = st.form_submit_button(
-        "Enregistrer la séance", type="primary", width='stretch'
+        "Enregistrer la séance", type="primary", use_container_width=True
     )
 
 
 # ── Traitement à la validation ──────────────────────────────────────────────────
 if submitted:
     player_info     = player_options[selected_label]
-    player_id       = player_info["id"]
     nom_prenom      = player_info["nom"]
     poste           = player_info["poste"]
 
@@ -181,94 +204,49 @@ if submitted:
     actual_duration = 0 if is_rest_day else duration
     actual_load     = 0.0 if is_rest_day else load
 
-    # 1. Enregistrement SQLite local (toujours)
-    add_session(
-        player_id=player_id,
-        session_date=str(session_date),
-        rpe=actual_rpe,
-        duration=actual_duration,
-        foster_load=actual_load,
-        fatigue=fatigue,
-        courbatures=courbatures,
-        sommeil=sommeil,
-        notes=notes,
-        groupe_entrainement=groupe_entrainement,
-    )
-
-    # 2. Enregistrement Google Sheets (si configuré)
-    gs_success = False
-    if gsheets_ok:
-        with st.spinner("Synchronisation Google Sheets..."):
-            # Initialisation des onglets si première utilisation
-            init_sheets()
-
-            # Ajout du groupe dans les notes pour Google Sheets
+    with st.spinner("Enregistrement dans Google Sheets..."):
+        try:
+            # 1. Lecture de l'onglet Saisies actuel
+            saisies_df = conn.read(worksheet="Saisies", ttl=0)
+            
+            # Formatage des notes
             notes_gs = f"[{groupe_entrainement}] {notes}" if notes.strip() else f"[{groupe_entrainement}]"
-
-            # Onglet Saisies → nouvelle ligne
-            ok1 = append_saisie_row(
-                nom_prenom=nom_prenom,
-                poste=poste,
-                semaine=int(semaine),
-                jour=jour,
-                rpe=actual_rpe,
-                duree=actual_duration,
-                charge=actual_load,
-                fatigue=fatigue,
-                courbatures=courbatures,
-                sommeil=sommeil,
-                notes=notes_gs,
-                is_rest=is_rest_day,
-            )
-
-            # Onglet RPE INDV → mise à jour cellule
-            ok2 = True
-            if not is_rest_day and jour in ["Mardi", "Mercredi", "Vendredi", "Jour de match"]:
-                ok2 = update_rpe_indv(
-                    nom_prenom=nom_prenom,
-                    poste=poste,
-                    semaine=int(semaine),
-                    jour=jour,
-                    rpe=actual_rpe,
-                    duree=actual_duration,
-                    charge=actual_load,
+            
+            # Formattage de la date pour correspondre à ton Google Sheets (ex: 24/09/2026 15:30)
+            from datetime import datetime
+            horodateur = datetime.now().strftime("%d/%m/%Y %H:%M")
+            
+            # 2. Création de la nouvelle ligne
+            new_row = pd.DataFrame([{
+                "Cle de recherche": f"{semaine}{nom_prenom.replace(' ', '')}",
+                "Horodateur": horodateur,
+                "Difficulte seance": RPE_LABELS.get(actual_rpe, str(actual_rpe)),
+                "Ressenti / Notes": notes_gs,
+                "Nom / Prenom": nom_prenom,
+                "Poste": poste,
+                "Numero Semaine": semaine,
+                "Jour seance": jour,
+                "RPE (Chiffre)": actual_rpe,
+                "Duree (min)": actual_duration,
+                "Charge (UA)": actual_load,
+                "Fatigue | Courbatures | Sommeil": f"Fatigue:{fatigue} | Courbatures:{courbatures} | Sommeil:{sommeil}"
+            }])
+            
+            # 3. Ajout et sauvegarde
+            updated_df = pd.concat([saisies_df, new_row], ignore_index=True)
+            conn.update(worksheet="Saisies", data=updated_df)
+            
+            if is_rest_day:
+                msg = f"Jour de repos enregistré pour **{selected_label}**."
+            else:
+                msg = (
+                    f"Séance enregistrée pour **{selected_label}** — "
+                    f"Charge : **{actual_load:.0f} UA** (RPE {actual_rpe} x {actual_duration} min)"
                 )
-
-            # Onglet RPE PAR LIGNE SEMAINE → agrégats par poste
-            ok3 = True
-            if not is_rest_day:
-                ok3 = update_rpe_par_ligne_semaine(
-                    poste=poste,
-                    semaine=int(semaine),
-                    nom_prenom=nom_prenom,
-                    rpe=actual_rpe,
-                    duree=actual_duration,
-                    charge=actual_load,
-                )
-
-            gs_success = ok1 and ok2 and ok3
-
-    # 3. Messages de confirmation
-    if is_rest_day:
-        msg = f"Jour de repos enregistré pour **{selected_label}** le {session_date}."
-    else:
-        msg = (
-            f"Séance enregistrée pour **{selected_label}** — "
-            f"Semaine {semaine}, {jour} — "
-            f"Charge : **{actual_load:.0f} UA** (RPE {actual_rpe} x {actual_duration} min)"
-        )
-    st.success(msg)
-
-    if gsheets_ok:
-        if gs_success:
-            st.info(
-                f"Google Sheets mis à jour : onglets **Saisies** + **RPE INDV** + **RPE PAR LIGNE SEMAINE**"
-            )
-        else:
-            st.warning("Enregistrement local OK, mais erreur lors de la synchronisation Google Sheets.")
-
-    if avg_well <= 2.5:
-        st.warning(f"Score bien-être faible ({avg_well:.1f}/5). Pensez à adapter la charge.")
+            st.success(msg)
+            
+        except Exception as e:
+            st.error(f"Erreur lors de l'enregistrement : {e}")
 
 # ── Aide RPE ────────────────────────────────────────────────────────────────────
 with st.expander("Echelle RPE de Borg CR-10"):
