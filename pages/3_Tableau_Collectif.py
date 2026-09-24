@@ -1,16 +1,12 @@
 """
 pages/3_Tableau_Collectif.py
-Dashboard collectif : heatmap ACWR équipe, tableau de risque, export CSV.
+Dashboard collectif connecté à Google Sheets : heatmap ACWR équipe, tableau de risque, export CSV.
 """
 
 import streamlit as st
 import pandas as pd
-import sys
-import os
+from streamlit_gsheets import GSheetsConnection
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
-from modules.database import get_all_sessions_team, get_players
 from modules.calculations import compute_team_acwr_snapshot
 from modules.alerts import acwr_alert, acwr_color
 from modules.visualizations import plot_team_heatmap
@@ -20,6 +16,15 @@ st.set_page_config(page_title="Tableau Collectif", page_icon="👥", layout="wid
 st.title("👥 Tableau de bord collectif")
 st.markdown("Vue d'ensemble de la charge et du risque pour tout l'effectif.")
 
+# ── Connexion à Google Sheets ──────────────────────────────────────────────────
+try:
+    conn = st.connection("gsheets", type=GSheetsConnection)
+    sessions_df = conn.read(worksheet="Saisies", ttl=0)
+    sessions_df = sessions_df.dropna(how="all")
+except Exception as e:
+    st.error(f"Erreur de connexion à Google Sheets : {e}")
+    st.stop()
+
 # ── FILTRE DE GROUPE ────────────────────────────────────────────────────────────
 filtre_groupe = st.radio(
     "Filtrer l'affichage (basé sur le groupe d'entraînement sélectionné lors des saisies) :",
@@ -27,15 +32,54 @@ filtre_groupe = st.radio(
     horizontal=True
 )
 
-# ── Chargement ──────────────────────────────────────────────────────────────────
-sessions_all = get_all_sessions_team(days=35)
+# ── Chargement et Nettoyage des données ────────────────────────────────────────
+if sessions_df.empty:
+    st.info("Aucune donnée disponible. Saisissez des séances dans **Saisie Quotidienne**.")
+    st.stop()
 
+df_raw = sessions_df.copy()
+
+try:
+    # Dates et Valeurs
+    df_raw["session_date"] = pd.to_datetime(df_raw["Horodateur"], format="%d/%m/%Y %H:%M").dt.normalize()
+    df_raw["foster_load"] = pd.to_numeric(df_raw["Charge (UA)"], errors='coerce').fillna(0)
+    df_raw["player_name"] = df_raw["Nom / Prenom"]
+    df_raw["poste"] = df_raw["Poste"]
+    
+    # Extraction du groupe d'entraînement depuis les notes (ex: "[Équipe A] match amical")
+    df_raw["groupe_entrainement"] = df_raw["Ressenti / Notes"].str.extract(r'\[(.*?)\]')[0]
+    df_raw["groupe_entrainement"] = df_raw["groupe_entrainement"].fillna("Groupe Élargi")
+
+    # Extraction des scores de bien-être
+    def extract_wellness(row_text, key):
+        if pd.isna(row_text): return None
+        try:
+            for p in str(row_text).split("|"):
+                if key in p: return float(p.split(":")[1].strip())
+        except: pass
+        return None
+
+    df_raw["fatigue"] = df_raw["Fatigue | Courbatures | Sommeil"].apply(lambda x: extract_wellness(x, "Fatigue"))
+    df_raw["courbatures"] = df_raw["Fatigue | Courbatures | Sommeil"].apply(lambda x: extract_wellness(x, "Courbatures"))
+    df_raw["sommeil"] = df_raw["Fatigue | Courbatures | Sommeil"].apply(lambda x: extract_wellness(x, "Sommeil"))
+    
+    # Tri par date
+    df_raw = df_raw.sort_values(by="session_date")
+
+except Exception as e:
+    st.error(f"Erreur lors du formatage des données : {e}")
+    st.stop()
+
+# Filtrer sur les 35 derniers jours (comme l'ancienne fonction SQLite)
+min_date = pd.Timestamp.now().normalize() - pd.Timedelta(days=35)
+sessions_all = df_raw[df_raw["session_date"] >= min_date].copy()
+
+# Appliquer le filtre de groupe si nécessaire
 if filtre_groupe != "Générale" and not sessions_all.empty:
     sessions_all = sessions_all[sessions_all["groupe_entrainement"] == filtre_groupe]
 
-
-if sessions_all.empty:
-    st.info("Aucune donnée disponible. Saisissez des séances dans **Saisie Quotidienne**.")
+if sessions_all.empty or sessions_all["foster_load"].sum() == 0:
+    st.info(f"Aucune donnée d'entraînement pour la période ou le groupe sélectionné.")
     st.stop()
 
 # ── SNAPSHOT ÉQUIPE ─────────────────────────────────────────────────────────────
@@ -70,7 +114,7 @@ st.markdown("---")
 # ── HEATMAP ─────────────────────────────────────────────────────────────────────
 st.subheader("🗓️ Heatmap ACWR — 14 derniers jours")
 fig_heatmap = plot_team_heatmap(snapshot, sessions_all)
-st.plotly_chart(fig_heatmap, width='stretch')
+st.plotly_chart(fig_heatmap, use_container_width=True)
 
 st.markdown("---")
 
@@ -107,7 +151,7 @@ display_cols = ["Joueur", "Poste", "Risque", "ACWR",
 
 st.dataframe(
     snapshot_display[display_cols].reset_index(drop=True),
-    width='stretch',
+    use_container_width=True,
     hide_index=True,
 )
 
@@ -122,7 +166,10 @@ with col_exp1:
         mime="text/csv",
     )
 with col_exp2:
-    csv_all = sessions_all.to_csv(index=False).encode("utf-8")
+    # Pour l'export complet, on nettoie un peu le df
+    export_cols = ["Horodateur", "Nom / Prenom", "Poste", "groupe_entrainement", 
+                   "Charge (UA)", "RPE (Chiffre)", "Duree (min)", "Ressenti / Notes", "Fatigue | Courbatures | Sommeil"]
+    csv_all = sessions_all[export_cols].to_csv(index=False).encode("utf-8")
     st.download_button(
         "⬇️ Exporter toutes les sessions (CSV)",
         data=csv_all,
@@ -137,4 +184,4 @@ with st.expander("📌 Vue par poste"):
     for poste in sorted(postes):
         st.markdown(f"**{poste}**")
         poste_df = snapshot_display[snapshot_display["Poste"] == poste][display_cols]
-        st.dataframe(poste_df.reset_index(drop=True), width='stretch', hide_index=True)
+        st.dataframe(poste_df.reset_index(drop=True), use_container_width=True, hide_index=True)
