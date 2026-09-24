@@ -41,7 +41,7 @@ df_raw = sessions_df.copy()
 
 try:
     # Dates et Valeurs
-    df_raw["session_date"] = pd.to_datetime(df_raw["Horodateur"], format="%d/%m/%Y %H:%M").dt.normalize()
+    df_raw["session_date"] = pd.to_datetime(df_raw["Horodateur"], format='mixed', dayfirst=True).dt.normalize()
     df_raw["foster_load"] = pd.to_numeric(df_raw["Charge (UA)"], errors='coerce').fillna(0)
     df_raw["player_name"] = df_raw["Nom / Prenom"]
     df_raw["poste"] = df_raw["Poste"]
