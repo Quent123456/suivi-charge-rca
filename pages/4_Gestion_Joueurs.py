@@ -1,40 +1,48 @@
 """
 pages/4_Gestion_Joueurs.py
-Gestion de l'effectif : ajout, modification et suppression de joueurs.
+Gestion de l'effectif : ajout, modification et suppression de joueurs sur Google Sheets.
 """
 
 import streamlit as st
-import sys
-import os
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
-from modules.database import get_players, add_player, delete_player, update_player
+import pandas as pd
+import uuid
+from streamlit_gsheets import GSheetsConnection
 
 st.set_page_config(page_title="Gestion Joueurs", page_icon="⚙️", layout="wide")
 
 st.title("⚙️ Gestion de l'effectif")
 
+# ── INITIALISATION CONNEXION GOOGLE SHEETS ───────────────────────────────────────
+# Établir la connexion sécurisée via les secrets Streamlit
+conn = st.connection("gsheets", type=GSheetsConnection)
+
+# Fonction pour télécharger la liste à jour
+def load_players():
+    try:
+        df = conn.read(worksheet="Effectif")
+        # Retirer les lignes totalement vides de Google Sheets
+        df = df.dropna(how="all")
+        # S'assurer que les identifiants sont bien en texte
+        df['id'] = df['id'].astype(str)
+        return df
+    except Exception:
+        # Si l'onglet est vide ou mal lu, on crée un tableau vide avec les bonnes colonnes
+        return pd.DataFrame(columns=["id", "nom", "prenom", "poste", "numero", "groupe"])
+
+players_df = load_players()
+
 POSTES_RUGBY = [
-    "Pilier",
-    "Talonneur",
-    "2ème ligne",
-    "3ème ligne",
-    "Demi de mêlée",
-    "Demi d'ouverture",
-    "Centre",
-    "Ailier",
-    "Arrière",
+    "Pilier", "Talonneur", "2ème ligne", "3ème ligne",
+    "Demi de mêlée", "Demi d'ouverture", "Centre", "Ailier", "Arrière",
 ]
 
 GROUPES = ["Groupe Élargi", "Équipe A", "Équipe B"]
 
 # ── LISTE DES JOUEURS ────────────────────────────────────────────────────────────
 st.subheader("📋 Effectif actuel")
-players_df = get_players()
 
 if players_df.empty:
-    st.info("Aucun joueur enregistré.")
+    st.info("Aucun joueur enregistré dans la base de données Google Sheets.")
 else:
     # Tableau affichage simplifié
     st.dataframe(
@@ -60,7 +68,6 @@ if not players_df.empty:
         with col1:
             edit_prenom = st.text_input("Prénom", value=selected_player["prenom"])
             
-            # Gestion du poste qui pourrait ne pas être dans la liste stricte (ex: anciens)
             default_poste_idx = 0
             if selected_player["poste"] in POSTES_RUGBY:
                 default_poste_idx = POSTES_RUGBY.index(selected_player["poste"])
@@ -81,18 +88,28 @@ if not players_df.empty:
             btn_del = st.form_submit_button("🗑️ Supprimer ce joueur")
 
         if btn_save:
-            update_player(
-                selected_player["id"], 
-                edit_nom.strip().upper(), 
-                edit_prenom.strip().capitalize(), 
-                edit_poste, 
-                edit_groupe
-            )
+            # Mettre à jour la ligne correspondante dans le dataframe
+            idx = players_df.index[players_df['id'] == selected_player['id']].tolist()[0]
+            players_df.at[idx, 'nom'] = edit_nom.strip().upper()
+            players_df.at[idx, 'prenom'] = edit_prenom.strip().capitalize()
+            players_df.at[idx, 'poste'] = edit_poste
+            players_df.at[idx, 'groupe'] = edit_groupe
+            
+            # Envoyer le tableau mis à jour vers Google Sheets
+            conn.update(worksheet="Effectif", data=players_df)
+            st.cache_data.clear() # Vider la mémoire cache
+            
             st.success(f"✅ Profil de {edit_prenom.capitalize()} {edit_nom.upper()} mis à jour.")
             st.rerun()
 
         if btn_del:
-            delete_player(selected_player["id"])
+            # Filtrer le tableau pour retirer le joueur sélectionné
+            updated_df = players_df[players_df['id'] != selected_player['id']]
+            
+            # Envoyer le nouveau tableau vers Google Sheets
+            conn.update(worksheet="Effectif", data=updated_df)
+            st.cache_data.clear() # Vider la mémoire cache
+            
             st.warning(f"⚠️ {edit_prenom.capitalize()} {edit_nom.upper()} supprimé(e).")
             st.rerun()
 
@@ -116,8 +133,22 @@ with st.form("add_player_form"):
         if not nom.strip() or not prenom.strip():
             st.error("Le nom et le prénom sont obligatoires.")
         else:
-            # We pass 0 or None for number as it was removed from UI context essentially, but signature expects it. 
-            # Or we can just use 0.
-            add_player(nom.strip().upper(), prenom.strip().capitalize(), poste, 0, groupe)
+            # Créer une nouvelle ligne de données avec un ID unique généré automatiquement
+            new_player = pd.DataFrame([{
+                "id": str(uuid.uuid4()),
+                "nom": nom.strip().upper(),
+                "prenom": prenom.strip().capitalize(),
+                "poste": poste,
+                "numero": 0,
+                "groupe": groupe
+            }])
+            
+            # Ajouter la nouvelle ligne au tableau existant
+            updated_df = pd.concat([players_df, new_player], ignore_index=True)
+            
+            # Envoyer la fusion vers Google Sheets
+            conn.update(worksheet="Effectif", data=updated_df)
+            st.cache_data.clear() # Vider la mémoire cache pour forcer la relecture
+            
             st.success(f"✅ {prenom.capitalize()} {nom.upper()} ajouté(e) au poste de {poste}.")
             st.rerun()
