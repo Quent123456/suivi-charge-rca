@@ -44,6 +44,10 @@ try:
     df_raw["session_date"] = pd.to_datetime(df_raw["Horodateur"], format='mixed', dayfirst=True).dt.normalize()
     df_raw["foster_load"] = pd.to_numeric(df_raw["Charge (UA)"], errors='coerce').fillna(0)
     df_raw["player_name"] = df_raw["Nom / Prenom"]
+    
+    # CORRECTION : Création d'un faux player_id basé sur le nom pour satisfaire la fonction de calcul
+    df_raw["player_id"] = df_raw["Nom / Prenom"] 
+    
     df_raw["poste"] = df_raw["Poste"]
     
     # Extraction du groupe d'entraînement depuis les notes (ex: "[Équipe A] match amical")
