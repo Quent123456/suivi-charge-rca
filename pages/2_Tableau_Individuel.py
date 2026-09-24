@@ -77,8 +77,8 @@ if df_raw.empty:
 
 # Conversion et formatage des données brutes GSheets pour les calculs
 try:
-    # Traitement de l'horodateur (ex: 22/09/2026 18:24) -> format datetime standard
-   df_raw["session_date"] = pd.to_datetime(df_raw["Horodateur"], format='mixed', dayfirst=True).dt.normalize()
+    # Traitement de l'horodateur avec format flexible (pour gérer les secondes)
+    df_raw["session_date"] = pd.to_datetime(df_raw["Horodateur"], format='mixed', dayfirst=True).dt.normalize()
     
     # Sécurisation des valeurs numériques
     df_raw["foster_load"] = pd.to_numeric(df_raw["Charge (UA)"], errors='coerce').fillna(0)
