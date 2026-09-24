@@ -1,15 +1,13 @@
 """
 pages/2_Tableau_Individuel.py
-Dashboard individuel : KPI, alertes ACWR, graphiques évolution + bien-être.
+Dashboard individuel connecté à Google Sheets : KPI, alertes ACWR, graphiques évolution + bien-être.
 """
 
 import streamlit as st
-import sys
-import os
+import pandas as pd
+from datetime import datetime
+from streamlit_gsheets import GSheetsConnection
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
-from modules.database import get_players, get_sessions
 from modules.calculations import (
     acute_load, chronic_load, acwr, monotony, strain,
     wellness_score, compute_rolling_metrics,
@@ -24,16 +22,35 @@ st.set_page_config(page_title="Tableau Individuel", page_icon="👤", layout="wi
 
 st.title("👤 Tableau de bord individuel")
 
-# ── Sélection joueur ────────────────────────────────────────────────────────────
-players_df = get_players()
+# ── Connexion à Google Sheets ──────────────────────────────────────────────────
+try:
+    conn = st.connection("gsheets", type=GSheetsConnection)
+    # Lecture de l'onglet Effectif
+    players_df = conn.read(worksheet="Effectif", ttl=0)
+    players_df = players_df.dropna(how="all")
+    
+    # Lecture de l'onglet Saisies
+    sessions_df = conn.read(worksheet="Saisies", ttl=0)
+    sessions_df = sessions_df.dropna(how="all")
+    gsheets_ok = True
+except Exception as e:
+    gsheets_ok = False
+    st.error(f"Erreur de connexion à Google Sheets : {e}")
+    st.stop()
 
+# ── Sélection joueur ────────────────────────────────────────────────────────────
 if players_df.empty:
     st.warning("Aucun joueur. Ajoutez des joueurs dans **Gestion des Joueurs**.")
     st.stop()
 
+# Nettoyage et formatage
+players_df["prenom"] = players_df["prenom"].fillna("")
+players_df["nom"] = players_df["nom"].fillna("")
+players_df["poste"] = players_df["poste"].fillna("Inconnu")
+
 player_options = {
-    f"{row['prenom']} {row['nom']} — {row['poste']}": row["id"]
-    for _, row in players_df.iterrows()
+    f"{row['prenom']} {row['nom']} — {row['poste']}": f"{row['nom']} {row['prenom']}"
+    for _, row in players_df.iterrows() if str(row['nom']).strip() != ""
 }
 
 col_sel1, col_sel2 = st.columns([2, 1])
@@ -43,16 +60,59 @@ with col_sel2:
     period = st.selectbox("Période d'analyse", [28, 42, 56, 84], index=0,
                           format_func=lambda x: f"{x} derniers jours")
 
-player_id = player_options[selected_label]
+player_gsheets_name = player_options[selected_label]
 player_name = selected_label.split(" —")[0]
 
-# ── Chargement données ──────────────────────────────────────────────────────────
-df_raw = get_sessions(player_id, days=max(period, 35))
+# ── Chargement et Nettoyage des données Saisies ─────────────────────────────────
+if sessions_df.empty:
+    st.info(f"Aucune séance enregistrée. Commencez par la **Saisie Quotidienne**.")
+    st.stop()
 
-if df_raw.empty or df_raw["foster_load"].sum() == 0:
+# Filtrer les données pour le joueur sélectionné
+df_raw = sessions_df[sessions_df["Nom / Prenom"] == player_gsheets_name].copy()
+
+if df_raw.empty:
     st.info(f"Aucune séance enregistrée pour {player_name}. Commencez par la **Saisie Quotidienne**.")
     st.stop()
 
+# Conversion et formatage des données brutes GSheets pour les calculs
+try:
+    # Traitement de l'horodateur (ex: 22/09/2026 18:24) -> format datetime standard
+    df_raw["session_date"] = pd.to_datetime(df_raw["Horodateur"], format="%d/%m/%Y %H:%M").dt.normalize()
+    
+    # Sécurisation des valeurs numériques
+    df_raw["foster_load"] = pd.to_numeric(df_raw["Charge (UA)"], errors='coerce').fillna(0)
+    df_raw["rpe"] = pd.to_numeric(df_raw["RPE (Chiffre)"], errors='coerce').fillna(0)
+    df_raw["duration"] = pd.to_numeric(df_raw["Duree (min)"], errors='coerce').fillna(0)
+    
+    # Extraction du bien-être depuis la chaine composite (ex: "Fatigue:3 | Courbatures:3 | Sommeil:3")
+    def extract_wellness(row_text, key):
+        if pd.isna(row_text): return None
+        try:
+            parts = str(row_text).split("|")
+            for p in parts:
+                if key in p:
+                    return float(p.split(":")[1].strip())
+        except:
+            pass
+        return None
+
+    df_raw["fatigue"] = df_raw["Fatigue | Courbatures | Sommeil"].apply(lambda x: extract_wellness(x, "Fatigue"))
+    df_raw["courbatures"] = df_raw["Fatigue | Courbatures | Sommeil"].apply(lambda x: extract_wellness(x, "Courbatures"))
+    df_raw["sommeil"] = df_raw["Fatigue | Courbatures | Sommeil"].apply(lambda x: extract_wellness(x, "Sommeil"))
+
+    # Tri chronologique indispensable pour les calculs de moyennes glissantes
+    df_raw = df_raw.sort_values(by="session_date")
+    
+except Exception as e:
+    st.error(f"Erreur lors du formatage des données : {e}")
+    st.stop()
+
+if df_raw["foster_load"].sum() == 0:
+    st.info(f"Toutes les charges enregistrées pour {player_name} sont à zéro.")
+    st.stop()
+
+# Application des métriques roulantes
 df = compute_rolling_metrics(df_raw)
 df_period = df.tail(period)
 
@@ -125,10 +185,10 @@ st.subheader("📉 Évolution de la charge")
 col_g1, col_g2 = st.columns([3, 1])
 with col_g1:
     fig_load = plot_load_evolution(df_period, player_name)
-    st.plotly_chart(fig_load, width='stretch')
+    st.plotly_chart(fig_load, use_container_width=True)
 with col_g2:
     fig_gauge = plot_acwr_gauge(ratio, player_name)
-    st.plotly_chart(fig_gauge, width='stretch')
+    st.plotly_chart(fig_gauge, use_container_width=True)
 
     # Alertes textuelles compactes
     st.markdown(f"{em_mono} {msg_mono}")
@@ -140,10 +200,10 @@ st.subheader("😴 Bien-être")
 col_w1, col_w2 = st.columns(2)
 with col_w1:
     fig_radar = plot_wellness_radar(df_period, player_name)
-    st.plotly_chart(fig_radar, width='stretch')
+    st.plotly_chart(fig_radar, use_container_width=True)
 with col_w2:
     fig_hist = plot_wellness_history(df_period, player_name)
-    st.plotly_chart(fig_hist, width='stretch')
+    st.plotly_chart(fig_hist, use_container_width=True)
 
 st.markdown(f"**Bilan bien-être :** {em_well} {msg_well}")
 
@@ -157,7 +217,7 @@ with st.expander("📋 Données brutes — Sessions"):
     display_df.columns = ["Date", "RPE", "Durée (min)", "Charge (UA)",
                            "Aiguë 7j", "Chronique 28j", "ACWR",
                            "Fatigue", "Courbatures", "Sommeil"]
-    st.dataframe(display_df, width='stretch', hide_index=True)
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
 
     # Export CSV
     csv = display_df.to_csv(index=False).encode("utf-8")
