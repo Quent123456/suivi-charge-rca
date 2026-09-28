@@ -1,6 +1,6 @@
 """
 pages/4_Gestion_Joueurs.py
-Gestion de l'effectif : ajout, modification et suppression de joueurs sur Google Sheets.
+Gestion de l'effectif : ajout, modification et suppression (en cascade) de joueurs sur Google Sheets.
 """
 
 import streamlit as st
@@ -13,20 +13,16 @@ st.set_page_config(page_title="Gestion Joueurs", page_icon="⚙️", layout="wid
 st.title("⚙️ Gestion de l'effectif")
 
 # ── INITIALISATION CONNEXION GOOGLE SHEETS ───────────────────────────────────────
-# Établir la connexion sécurisée via les secrets Streamlit
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 # Fonction pour télécharger la liste à jour
 def load_players():
     try:
         df = conn.read(worksheet="Effectif")
-        # Retirer les lignes totalement vides de Google Sheets
         df = df.dropna(how="all")
-        # S'assurer que les identifiants sont bien en texte
         df['id'] = df['id'].astype(str)
         return df
     except Exception:
-        # Si l'onglet est vide ou mal lu, on crée un tableau vide avec les bonnes colonnes
         return pd.DataFrame(columns=["id", "nom", "prenom", "poste", "numero", "groupe"])
 
 players_df = load_players()
@@ -44,7 +40,6 @@ st.subheader("📋 Effectif actuel")
 if players_df.empty:
     st.info("Aucun joueur enregistré dans la base de données Google Sheets.")
 else:
-    # Tableau affichage simplifié
     st.dataframe(
         players_df[["prenom", "nom", "poste", "groupe"]],
         use_container_width=True,
@@ -53,7 +48,7 @@ else:
 st.markdown(f"**Total : {len(players_df)} joueur(s)**")
 st.markdown("---")
 
-# ── MODIFICATION D'UN JOUEUR ─────────────────────────────────────────────────────
+# ── MODIFICATION / SUPPRESSION D'UN JOUEUR ───────────────────────────────────────
 st.subheader("✏️ Modifier / Supprimer un joueur")
 if not players_df.empty:
     player_options = {
@@ -88,29 +83,60 @@ if not players_df.empty:
             btn_del = st.form_submit_button("🗑️ Supprimer ce joueur")
 
         if btn_save:
-            # Mettre à jour la ligne correspondante dans le dataframe
+            # Récupérer l'ancien nom complet pour mettre à jour les historiques
+            ancien_nom_complet = f"{selected_player['nom'].upper()} {selected_player['prenom'].capitalize()}"
+            nouveau_nom_complet = f"{edit_nom.strip().upper()} {edit_prenom.strip().capitalize()}"
+
+            # 1. Mise à jour de l'Effectif
             idx = players_df.index[players_df['id'] == selected_player['id']].tolist()[0]
             players_df.at[idx, 'nom'] = edit_nom.strip().upper()
             players_df.at[idx, 'prenom'] = edit_prenom.strip().capitalize()
             players_df.at[idx, 'poste'] = edit_poste
             players_df.at[idx, 'groupe'] = edit_groupe
             
-            # Envoyer le tableau mis à jour vers Google Sheets
             conn.update(worksheet="Effectif", data=players_df)
-            st.cache_data.clear() # Vider la mémoire cache
             
-            st.success(f"✅ Profil de {edit_prenom.capitalize()} {edit_nom.upper()} mis à jour.")
+            # 2. Mise à jour de l'onglet Saisies (si le nom ou le poste a changé)
+            if ancien_nom_complet != nouveau_nom_complet or selected_player['poste'] != edit_poste:
+                try:
+                    saisies_df = conn.read(worksheet="Saisies", ttl=0)
+                    if not saisies_df.empty:
+                        # Remplacer le vieux nom par le nouveau dans tout l'historique
+                        mask = saisies_df['Nom / Prenom'] == ancien_nom_complet
+                        saisies_df.loc[mask, 'Nom / Prenom'] = nouveau_nom_complet
+                        saisies_df.loc[mask, 'Poste'] = edit_poste
+                        
+                        # Mettre à jour la clé de recherche qui contenait l'ancien nom
+                        saisies_df.loc[mask, 'Cle de recherche'] = saisies_df.loc[mask, 'Numero Semaine'].astype(str) + nouveau_nom_complet.replace(' ', '')
+                        
+                        conn.update(worksheet="Saisies", data=saisies_df)
+                except Exception as e:
+                    st.error(f"Le profil est mis à jour, mais l'historique n'a pas pu être renommé : {e}")
+
+            st.cache_data.clear()
+            st.success(f"✅ Profil de {nouveau_nom_complet} mis à jour (historique inclus).")
             st.rerun()
 
         if btn_del:
-            # Filtrer le tableau pour retirer le joueur sélectionné
-            updated_df = players_df[players_df['id'] != selected_player['id']]
-            
-            # Envoyer le nouveau tableau vers Google Sheets
-            conn.update(worksheet="Effectif", data=updated_df)
-            st.cache_data.clear() # Vider la mémoire cache
-            
-            st.warning(f"⚠️ {edit_prenom.capitalize()} {edit_nom.upper()} supprimé(e).")
+            nom_complet_a_supprimer = f"{selected_player['nom'].upper()} {selected_player['prenom'].capitalize()}"
+
+            with st.spinner("Suppression du joueur et de son historique en cours..."):
+                # 1. Suppression du joueur dans l'onglet Effectif
+                updated_players_df = players_df[players_df['id'] != selected_player['id']]
+                conn.update(worksheet="Effectif", data=updated_players_df)
+                
+                # 2. Nettoyage en cascade dans l'onglet Saisies
+                try:
+                    saisies_df = conn.read(worksheet="Saisies", ttl=0)
+                    if not saisies_df.empty:
+                        # Ne garder que les lignes qui NE SONT PAS le joueur à supprimer
+                        updated_saisies_df = saisies_df[saisies_df['Nom / Prenom'] != nom_complet_a_supprimer]
+                        conn.update(worksheet="Saisies", data=updated_saisies_df)
+                except Exception as e:
+                    st.error(f"Le joueur est supprimé, mais son historique n'a pas pu être effacé : {e}")
+
+            st.cache_data.clear()
+            st.warning(f"⚠️ {nom_complet_a_supprimer} et tout son historique d'entraînement ont été supprimés.")
             st.rerun()
 
 st.markdown("---")
@@ -133,7 +159,6 @@ with st.form("add_player_form"):
         if not nom.strip() or not prenom.strip():
             st.error("Le nom et le prénom sont obligatoires.")
         else:
-            # Créer une nouvelle ligne de données avec un ID unique généré automatiquement
             new_player = pd.DataFrame([{
                 "id": str(uuid.uuid4()),
                 "nom": nom.strip().upper(),
@@ -143,12 +168,9 @@ with st.form("add_player_form"):
                 "groupe": groupe
             }])
             
-            # Ajouter la nouvelle ligne au tableau existant
             updated_df = pd.concat([players_df, new_player], ignore_index=True)
-            
-            # Envoyer la fusion vers Google Sheets
             conn.update(worksheet="Effectif", data=updated_df)
-            st.cache_data.clear() # Vider la mémoire cache pour forcer la relecture
+            st.cache_data.clear()
             
             st.success(f"✅ {prenom.capitalize()} {nom.upper()} ajouté(e) au poste de {poste}.")
             st.rerun()
