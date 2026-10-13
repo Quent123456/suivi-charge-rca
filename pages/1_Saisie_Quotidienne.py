@@ -21,11 +21,16 @@ if "saved_duration" not in st.session_state:
 if "saved_group" not in st.session_state:
     st.session_state.saved_group = "Groupe Élargi"
 
-# ── 2. Connexion à Google Sheets ───────────────────────────────────────────────
+# ── 2. Connexion à Google Sheets et Chargement mis en cache ─────────────────────
+@st.cache_data(ttl=600)
+def load_players_data(_conn) -> pd.DataFrame:
+    """Charge l'effectif depuis Google Sheets avec mise en cache (10 min)."""
+    df = _conn.read(worksheet="Effectif", ttl=600)
+    return df.dropna(how="all")
+
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
-    players_df = conn.read(worksheet="Effectif", ttl=0)
-    players_df = players_df.dropna(how="all")
+    players_df = load_players_data(conn).copy()
 except Exception as e:
     st.error(f"Erreur de connexion à Google Sheets : {e}")
     st.stop()

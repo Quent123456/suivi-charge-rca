@@ -88,24 +88,34 @@ if sessions_all.empty or sessions_all["foster_load"].sum() == 0:
     st.info("Aucune donnée d'entraînement pour la période ou le groupe sélectionné.")
     st.stop()
 
-# ── 1. CALCUL DU RPE MOYEN (7 DERNIERS JOURS) PAR JOUEUR ───────────────────────
-ref_date = pd.Timestamp.now().normalize()
-if not sessions_all.empty and (ref_date - sessions_all["session_date"].max()).days > 7:
-    ref_date = sessions_all["session_date"].max()
+# ── 1. CALCUL DU RPE MOYEN DYNAMIQUE PAR JOUEUR ────────────────────────────────
+periode_rpe = st.radio(
+    "Période d'analyse du RPE moyen :",
+    options=[7, 14, 28],
+    format_func=lambda x: f"{x} jours",
+    horizontal=True,
+)
 
-date_7j = ref_date - pd.Timedelta(days=7)
+nom_col_rpe = f"RPE Moyen ({periode_rpe}j)"
 
-# Séances des 7 derniers jours en excluant les jours de repos (RPE = 0)
-sessions_7j = sessions_all[(sessions_all["session_date"] >= date_7j) & (sessions_all["rpe"] > 0)].copy()
+last_period = sessions_all[sessions_all["session_date"] >= (pd.Timestamp.now().normalize() - pd.Timedelta(days=periode_rpe))]
+rpe_data = last_period[last_period["rpe"] > 0].copy()
 
-# Moyenne RPE 7j par joueur
-rpe_7j_by_player = sessions_7j.groupby("player_name")["rpe"].mean().to_dict()
+# Calcul du RPE moyen par joueur sur la période sélectionnée (hors RPE = 0)
+rpe_by_player = (
+    rpe_data.groupby("player_name")["rpe"]
+    .mean()
+    .reset_index()
+    .rename(columns={"rpe": nom_col_rpe})
+)
 
 # ── SNAPSHOT ÉQUIPE ─────────────────────────────────────────────────────────────
 snapshot = compute_team_acwr_snapshot(sessions_all)
 
-# Intégration de la colonne RPE Moyen (7j) dans le snapshot
-snapshot["RPE Moyen (7j)"] = snapshot["Joueur"].map(rpe_7j_by_player)
+# Intégration de la colonne RPE Moyen dynamique dans le snapshot
+snapshot[nom_col_rpe] = snapshot["Joueur"].map(
+    rpe_by_player.set_index("player_name")[nom_col_rpe]
+)
 
 # ── KPI COLLECTIFS ──────────────────────────────────────────────────────────────
 st.subheader("📊 Résumé de l'effectif")
@@ -247,14 +257,14 @@ for col in ["Charge aiguë (7j)", "Charge chronique (28j)", "Contrainte"]:
 snapshot_display["Bien-être /5"] = snapshot_display["Bien-être /5"].apply(
     lambda x: f"{x:.1f}/5" if pd.notna(x) else "N/A"
 )
-snapshot_display["RPE Moyen (7j)"] = snapshot_display["RPE Moyen (7j)"].apply(
+snapshot_display[nom_col_rpe] = snapshot_display[nom_col_rpe].apply(
     lambda x: f"{x:.1f}" if pd.notna(x) else "N/A"
 )
 
 display_cols = [
     "Joueur",
     "Poste",
-    "RPE Moyen (7j)",
+    nom_col_rpe,
     "Risque",
     "ACWR",
     "Charge aiguë (7j)",
@@ -306,14 +316,13 @@ st.markdown("---")
 with st.expander("📌 Vue par poste"):
     postes = snapshot["Poste"].unique()
     for poste in sorted(postes):
-        # Calcul de la moyenne du RPE (sur les 7 derniers jours, hors zéros) pour ce poste
-        poste_7j = sessions_7j[sessions_7j["poste"] == poste]
-        if not poste_7j.empty and not poste_7j["rpe"].isna().all():
-            rpe_poste_val = poste_7j["rpe"].mean()
-            rpe_poste_str = f"**{rpe_poste_val:.1f}**"
+        # Calcul de la moyenne du RPE pour ce poste sur la période sélectionnée (hors repos)
+        poste_data = rpe_data[rpe_data["poste"] == poste]
+        if not poste_data.empty and not poste_data["rpe"].isna().all():
+            avg_rpe_poste = poste_data["rpe"].mean()
+            st.markdown(f"#### **{poste}** — RPE Moyen ({periode_rpe} derniers jours) : **{avg_rpe_poste:.1f}**")
         else:
-            rpe_poste_str = "**N/A**"
+            st.markdown(f"#### **{poste}** — RPE Moyen ({periode_rpe} derniers jours) : **N/A**")
 
-        st.markdown(f"#### **{poste}** — RPE Moyen (7 derniers jours) : {rpe_poste_str}")
         poste_df = snapshot_display[snapshot_display["Poste"] == poste][display_cols]
         st.dataframe(poste_df.reset_index(drop=True), width='stretch', hide_index=True)

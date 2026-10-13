@@ -372,15 +372,18 @@ def update_rpe_indv(
 
     sheet_row = target_row_idx + 1  # gspread est 1-based
 
-    # Colonnes gspread (1-based) : A=1, B=2, C=3, D=4 ...
-    ws.update_cell(sheet_row, col_map["rpe"]    + 1, rpe)
-    ws.update_cell(sheet_row, col_map["duree"]  + 1, duree)
-    ws.update_cell(sheet_row, col_map["charge"] + 1, charge)
+    try:
+        # Colonnes gspread (1-based) : A=1, B=2, C=3, D=4 ...
+        ws.update_cell(sheet_row, col_map["rpe"]    + 1, rpe)
+        ws.update_cell(sheet_row, col_map["duree"]  + 1, duree)
+        ws.update_cell(sheet_row, col_map["charge"] + 1, charge)
 
-    # Recalcul des métriques dans cette ligne
-    _update_metrics_row(ws, sheet_row, all_vals, nom_prenom, semaine)
-
-    return True
+        # Recalcul des métriques dans cette ligne
+        _update_metrics_row(ws, sheet_row, all_vals, nom_prenom, semaine)
+        return True
+    except Exception as e:
+        print(f"Erreur écriture RPE INDV : {e}")
+        return False
 
 
 def _create_player_block(
@@ -391,33 +394,32 @@ def _create_player_block(
     semaine: int,
 ) -> Optional[int]:
     """
-    Ajoute un bloc de 5 lignes (semaines 1-5) pour un nouveau joueur
-    à la suite du tableau, ou insère juste la ligne de semaine manquante.
-    Retourne l'index 0-based de la ligne cible (semaine demandée).
+    Trouve ou crée la ligne de semaine pour le joueur.
+    Retourne l'index 0-based de la ligne cible.
     """
-    # Chercher si le joueur existe déjà (une autre semaine)
-    existing_rows = []
-    for i, row in enumerate(all_vals):
-        if len(row) >= 2 and str(row[1]).strip() == nom_prenom:
-            existing_rows.append(i)
+    try:
+        # Chercher si le joueur existe déjà
+        existing_rows = []
+        for i, row in enumerate(all_vals):
+            if len(row) >= 2 and str(row[1]).strip() == nom_prenom:
+                existing_rows.append(i)
+                if len(row) >= 3 and str(row[2]).strip() == str(semaine):
+                    return i
 
-    if existing_rows:
-        # Joueur existe → ajouter juste la semaine manquante après ses autres lignes
-        last_idx   = max(existing_rows)
-        insert_pos = last_idx + 2  # gspread 1-based, après le dernier
-        ws.insert_row(["", nom_prenom, semaine] + [""] * 23, insert_pos)
-        return insert_pos - 1  # retour 0-based
-    else:
-        # Nouveau joueur → ajouter 5 lignes à la fin
-        last_row = len(all_vals) + 1
-        rows_to_add = []
-        for s in range(1, 6):
-            prefix = [poste if s == 1 else "", nom_prenom if s == 1 else "", s]
-            rows_to_add.append(prefix + [""] * 23)
-        ws.append_rows(rows_to_add, value_input_option="USER_ENTERED")
-        # La ligne cible est celle de la semaine demandée
-        target_offset = semaine - 1
-        return len(all_vals) + target_offset
+        if existing_rows:
+            # Joueur existe → insérer la semaine manquante
+            last_idx   = max(existing_rows)
+            insert_pos = last_idx + 2  # gspread 1-based
+            ws.insert_row(["", nom_prenom, semaine] + [""] * 23, insert_pos)
+            return insert_pos - 1
+        else:
+            # Nouveau joueur → ajouter la ligne pour cette semaine
+            new_row = [poste, nom_prenom, semaine] + [""] * 23
+            ws.append_row(new_row, value_input_option="USER_ENTERED")
+            return len(all_vals)
+    except Exception as e:
+        print(f"Erreur _create_player_block : {e}")
+        return None
 
 
 def _update_metrics_row(
