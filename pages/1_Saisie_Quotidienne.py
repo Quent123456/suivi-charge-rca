@@ -178,14 +178,16 @@ RPE_COLORS = {
 
 col3, col4, col5 = st.columns(3)
 with col3:
-    # Ancre HTML pour isoler le style au slider RPE uniquement
-    st.markdown('<div class="rpe-slider-anchor" style="display:none;"></div>', unsafe_allow_html=True)
-    rpe = st.select_slider(
-        "RPE — Perception de l'effort",
-        options=list(RPE_LABELS.keys()),
-        value=5,
-        format_func=lambda x: RPE_LABELS[x],
-    )
+    # Conteneur parent dédié pour isoler strictement le slider RPE
+    rpe_container = st.container(key="rpe_container")
+    with rpe_container:
+        st.markdown('<div class="rpe-anchor" style="display:none;"></div>', unsafe_allow_html=True)
+        rpe = st.select_slider(
+            "RPE — Perception de l'effort",
+            options=list(RPE_LABELS.keys()),
+            value=5,
+            format_func=lambda x: RPE_LABELS[x],
+        )
     
     # Couleur dynamique selon la valeur RPE choisie
     rpe_color = RPE_COLORS.get(rpe, "#eab308")
@@ -196,22 +198,35 @@ with col3:
     st.markdown(
         f"""
         <style>
-        /* ── Style du Slider RPE : Jauge épaisse (14px) avec coins arrondis et dégradé dynamique ── */
-        div[data-testid="column"]:has(.rpe-slider-anchor) div[data-baseweb="slider"] > div > div:last-child,
-        div[data-testid="column"]:has(.rpe-slider-anchor) div[data-baseweb="slider"] > div > div > div:last-child,
-        div[data-testid="column"]:has(.rpe-slider-anchor) div[data-baseweb="slider"] div[style*="linear-gradient"],
-        div[data-testid="stSlider"]:has(div[role="slider"][aria-label*="RPE"]) div[data-baseweb="slider"] > div > div:last-child,
-        div[data-testid="stSlider"]:has(div[role="slider"][aria-label*="RPE"]) div[data-baseweb="slider"] > div > div > div:last-child,
-        div[data-testid="stSlider"]:has(div[role="slider"][aria-label*="RPE"]) div[data-baseweb="slider"] div[style*="linear-gradient"] {{
+        /* ── Redéfinition des variables natives Streamlit pour le conteneur RPE ── */
+        .st-key-rpe_container,
+        div[class*="st-key-rpe_container"],
+        div:has(.rpe-anchor) {{
+            --primary-color: {rpe_color} !important;
+            --st-color-primary: {rpe_color} !important;
+        }}
+
+        /* ── Barre de fond (Track) : Épaisseur 14px, coins arrondis et dégradé dynamique ── */
+        .st-key-rpe_container div[data-baseweb="slider"] div[style*="linear-gradient"],
+        .st-key-rpe_container div[data-baseweb="slider"] > div > div > div:last-child,
+        .st-key-rpe_container div[data-baseweb="slider"] > div > div:last-child,
+        div[class*="st-key-rpe_container"] div[data-baseweb="slider"] div[style*="linear-gradient"],
+        div[class*="st-key-rpe_container"] div[data-baseweb="slider"] > div > div > div:last-child,
+        div[class*="st-key-rpe_container"] div[data-baseweb="slider"] > div > div:last-child,
+        div:has(.rpe-anchor) div[data-baseweb="slider"] div[style*="linear-gradient"],
+        div:has(.rpe-anchor) div[data-baseweb="slider"] > div > div > div:last-child,
+        div:has(.rpe-anchor) div[data-baseweb="slider"] > div > div:last-child {{
             height: 14px !important;
             border-radius: 7px !important;
             background: {track_gradient} !important;
         }}
 
-        /* ── Poignée (Thumb) : Remplissage dynamique, taille agrandie et halo ── */
-        div[data-testid="column"]:has(.rpe-slider-anchor) div[role="slider"],
-        div[data-testid="stSlider"]:has(div[role="slider"][aria-label*="RPE"]) div[role="slider"] {{
+        /* ── Curseur (Thumb) : Couleur dynamique, contour blanc et halo ── */
+        .st-key-rpe_container div[role="slider"],
+        div[class*="st-key-rpe_container"] div[role="slider"],
+        div:has(.rpe-anchor) div[role="slider"] {{
             background-color: {rpe_color} !important;
+            background: {rpe_color} !important;
             border: 3px solid #ffffff !important;
             box-shadow: 0 0 10px {rpe_color}99, 0 2px 6px rgba(0, 0, 0, 0.25) !important;
             height: 24px !important;
@@ -220,10 +235,19 @@ with col3:
         }}
 
         /* ── Valeur au-dessus du curseur avec couleur dynamique ── */
-        div[data-testid="column"]:has(.rpe-slider-anchor) div[data-testid="stSliderThumbValue"],
-        div[data-testid="stSlider"]:has(div[role="slider"][aria-label*="RPE"]) div[data-testid="stSliderThumbValue"] {{
+        .st-key-rpe_container div[data-testid="stSliderThumbValue"],
+        div[class*="st-key-rpe_container"] div[data-testid="stSliderThumbValue"],
+        div:has(.rpe-anchor) div[data-testid="stSliderThumbValue"] {{
             color: {rpe_color} !important;
             font-weight: 700 !important;
+            background-color: transparent !important;
+        }}
+
+        /* ── Sécurité : Conteneur extérieur transparent ── */
+        .st-key-rpe_container div[data-baseweb="slider"] > div,
+        div[class*="st-key-rpe_container"] div[data-baseweb="slider"] > div,
+        div:has(.rpe-anchor) div[data-baseweb="slider"] > div {{
+            background-color: transparent !important;
         }}
         </style>
         """,
